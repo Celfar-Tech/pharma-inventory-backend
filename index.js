@@ -5,6 +5,7 @@ const medicineRoutes = require("./routes/medicine");
 const manufacturerRoutes = require("./routes/manufacturer");
 const inventoryRoutes = require("./routes/inventory");
 const billingRoutes = require("./routes/billing");
+const dashboardRoutes = require("./routes/dashboard");
 const app = express();
 const bodyParser = require("body-parser");
 const PORT = `8080`;
@@ -34,6 +35,7 @@ app.use("/medicine/", reqAuth, medicineRoutes);
 app.use("/inventory/", reqAuth, inventoryRoutes);
 app.use("/manufacturer/", reqAuth, manufacturerRoutes);
 app.use("/billing/", reqAuth, billingRoutes);
+app.use("/dashboard/", reqAuth, dashboardRoutes);
 app.use((err, req, res, next) => {
   console.error(err.stack);
   res.status(500).json({ error: "Something went wrong!" });
