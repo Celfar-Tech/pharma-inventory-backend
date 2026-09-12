@@ -1,0 +1,66 @@
+name: Install npm dependencies on VPS
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - main
+    paths:
+      - 'package.json'
+      - 'package-lock.json'
+
+jobs:
+  install-deps:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 2
+
+      - name: Detect which dependency file changed
+        id: changed
+        uses: dorny/paths-filter@v4
+        with:
+          filters: |
+            lockfile:
+              - 'package-lock.json'
+            manifest:
+              - 'package.json'
+
+      - name: Install dependencies on VPS
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          # Absolute path to the nvm-managed Node bin dir, e.g.
+          # /home/github-act-cicd/.nvm/versions/node/v24.21.0/bin
+          # Non-interactive SSH shells do not load nvm, so PATH must be set explicitly.
+          NODE_BIN: ${{ vars.VPS_NODE_BIN }}
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          envs: NODE_BIN
+          script_stop: true
+          script: |
+            if [ -n "$NODE_BIN" ]; then
+              export PATH="$NODE_BIN:$PATH"
+            else
+              # Fallback: load nvm so node/npm resolve even if the variable is unset
+              export NVM_DIR="$HOME/.nvm"
+              if [ -s "$NVM_DIR/nvm.sh" ]; then
+                . "$NVM_DIR/nvm.sh"
+                nvm use default >/dev/null 2>&1 || true
+              fi
+            fi
+
+            command -v npm >/dev/null || { echo "npm not found (NODE_BIN='$NODE_BIN' PATH=$PATH)"; exit 1; }
+            node -v; npm -v
+
+            cd ${{ vars.TARGET_DIR }}
+            if [ "${{ steps.changed.outputs.lockfile }}" = "true" ]; then
+              npm ci
+            else
+              npm install
+            fi
