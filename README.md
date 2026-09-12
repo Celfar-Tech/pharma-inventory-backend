@@ -14,7 +14,7 @@ Backend for Pharma Inventory app with comprehensive API endpoints for medicine m
 - Medicine management (add medicines to inventory)
 - Inventory tracking with stock management
 - Medicine name search functionality
-- PostgreSQL database integration via Supabase (free tier)
+- PostgreSQL database integration (self-hosted on the same VPS)
 - CORS enabled for cross-origin requests
 
 ## Quick Start
@@ -24,13 +24,17 @@ Backend for Pharma Inventory app with comprehensive API endpoints for medicine m
    ```bash
    npm install
    ```
-3. Configure environment variables (create .env file):
+3. Configure environment variables (create a `.env` file):
    ```env
-   DB_PASSWORD=your_supabase_db_password
-   DB_SSL_REJECT_UNAUTHORIZED=true
+   DB_USER=pharma_bot
+   DB_HOST=localhost
+   DB_DATABASE=pharma
+   DB_PASSWORD=your_db_password
+   DB_PORT=5432
+   DB_SSL=false
    ```
 
-   This project uses **PostgreSQL** as its database and is currently leveraging the **free tier of Supabase** to host the database online. The app connects to Supabase using TLS. Certificate verification is enabled by default, so keep `DB_SSL_REJECT_UNAUTHORIZED=true` in production. Set it to `false` only for local development if absolutely necessary.
+   This project uses **PostgreSQL**. In production the database runs on the **same VPS as the Node app**, so the app connects over `localhost` with **TLS disabled** (`DB_SSL=false`). TLS is opt-in: set `DB_SSL=true` only when connecting to a remote/managed Postgres over the network. Optionally set `DATABASE_URL` to a full connection string; it takes precedence over the individual `DB_*` variables, and its password must be URL-encoded.
 
 4. Start the server:
    ```bash
