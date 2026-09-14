@@ -209,7 +209,7 @@ class BillingInvoice {
 
   static async getInvoiceByNumber(invoiceNumber, emailid) {
     await BillingInvoice.ensureTablesExist();
-    const invoice = await BillingInvoice.findByInvoiceNumber(invoiceNumber,emailid);
+    const invoice = await BillingInvoice.findByInvoiceNumber(invoiceNumber, emailid);
     if (!invoice) return null;
 
     const items = await BillingItem.findByInvoiceNumber(invoiceNumber);
@@ -274,38 +274,38 @@ class BillingInvoice {
       throw new Error(`Unsupported granularity "${granularity}". Use one of: day, week, month`);
     }
 
-    // `invoice_date` may be physically stored as DATE or as ISO TEXT (both have occurred in this
-    // schema). Casting it to date keeps the filters/grouping type-safe regardless of the deployed
-    // column type; every user-supplied value is still parameterized.
+    // Uses the materialized view (pharma.mv_daily_revenue) where data is pre-aggregated by day.
+    // This avoids costly full-table scans on pharma.billing_invoice.
     const sql = `
-      WITH series AS (
-        SELECT generate_series(
-                 date_trunc('${bucket.sqlUnit}', $2::date::timestamp),
-                 date_trunc('${bucket.sqlUnit}', $3::date::timestamp),
-                 ${bucket.seriesStep}
-               ) AS bucket_start
-      ),
-      agg AS (
-        SELECT date_trunc('${bucket.sqlUnit}', invoice_date::date::timestamp) AS bucket_start,
-               COUNT(*)::int                                                 AS invoice_count,
-               COALESCE(SUM(final_payable), 0)                               AS total
-        FROM pharma.billing_invoice
-        WHERE created_by = $1
-          AND invoice_date::date >= $2::date
-          AND invoice_date::date <= $3::date
-        GROUP BY date_trunc('${bucket.sqlUnit}', invoice_date::date::timestamp)
-      )
-      SELECT ${bucket.labelExpr}                                 AS label,
-             to_char(s.bucket_start::date, 'YYYY-MM-DD')         AS start_date,
-             to_char(${bucket.endExpr}, 'YYYY-MM-DD')            AS end_date,
-             COALESCE(a.total, 0)::numeric(14, 2)                AS total,
-             COALESCE(a.invoice_count, 0)::int                   AS invoice_count
-      FROM series s
-      LEFT JOIN agg a ON a.bucket_start = s.bucket_start
-      ORDER BY s.bucket_start ASC;
-    `;
+    WITH series AS (
+      SELECT generate_series(
+               date_trunc('${bucket.sqlUnit}', $2::date::timestamp),
+               date_trunc('${bucket.sqlUnit}', $3::date::timestamp),
+               ${bucket.seriesStep}
+             ) AS bucket_start
+    ),
+    agg AS (
+      SELECT date_trunc('${bucket.sqlUnit}', day_bucket::timestamp) AS bucket_start,
+             SUM(invoice_count)::int                                 AS invoice_count,
+             COALESCE(SUM(total_revenue), 0)                         AS total
+      FROM pharma.mv_daily_revenue
+      WHERE created_by = $1
+        AND day_bucket >= $2::date
+        AND day_bucket <= $3::date
+      GROUP BY date_trunc('${bucket.sqlUnit}', day_bucket::timestamp)
+    )
+    SELECT ${bucket.labelExpr}                                 AS label,
+           to_char(s.bucket_start::date, 'YYYY-MM-DD')         AS start_date,
+           to_char(${bucket.endExpr}, 'YYYY-MM-DD')            AS end_date,
+           COALESCE(a.total, 0)::numeric(14, 2)                AS total,
+           COALESCE(a.invoice_count, 0)::int                   AS invoice_count
+    FROM series s
+    LEFT JOIN agg a ON a.bucket_start = s.bucket_start
+    ORDER BY s.bucket_start ASC;
+  `;
 
     const result = await db.query(sql, [emailid, startDate, endDate]);
+
     return result.rows.map((row) => ({
       label: row.label,
       startDate: row.start_date,
