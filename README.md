@@ -6,6 +6,7 @@ Backend for Pharma Inventory app with comprehensive API endpoints for medicine m
 
 - [API Documentation](./ENDPOINT_DOCUMENTATION.md) - Complete API reference for medicine search and user management
 - [Inventory API Documentation](./INVENTORY_API_DOCUMENTATION.md) - Detailed documentation for inventory management endpoints
+- [Dashboard Revenue Analytics & AI-Agent Tools](./controllers/DASHBOARD_AGENT_TOOLS.md) - Sales-revenue analytics endpoints and the agent tool manifest
 - [Implementation Summary](./IMPLEMENTATION_SUMMARY.md) - Technical overview and implementation details
 
 ## Features
@@ -16,6 +17,7 @@ Backend for Pharma Inventory app with comprehensive API endpoints for medicine m
 - Medicine name search functionality
 - PostgreSQL database integration via Supabase (free tier)
 - CORS enabled for cross-origin requests
+- Dashboard revenue analytics (monthly / weekly / custom range) with AI-agent tool definitions
 
 ## Quick Start
 
