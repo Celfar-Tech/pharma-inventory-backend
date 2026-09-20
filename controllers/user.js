@@ -159,7 +159,37 @@ exports.logOut = (req, res) => {
     sameSite: 'lax',
     path: '/'
   });
+  res.clearCookie('user');
   return res.status(200).json({ success: true, message: "Logged out successfully" });
+};
+
+exports.getProfile = (req, res) => {
+  const {
+    id,
+    username,
+    email,
+    role,
+    first_name,
+    last_name,
+    phone_number,
+    license_number,
+    status,
+  } = req.user;
+
+  return res.status(200).json({
+    success: true,
+    user: {
+      id,
+      username,
+      email,
+      role,
+      first_name,
+      last_name,
+      phone_number,
+      license_number,
+      status,
+    },
+  });
 };
 
 // File: backend/controllers/user.js [BACKEND]

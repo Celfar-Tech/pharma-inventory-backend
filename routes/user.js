@@ -14,4 +14,7 @@ router.post("/forgot-password/reset", userController.resetPassword);
 router.post("/login", userController.logIn);
 router.post("/logout", reqAuth, userController.logOut);
 
+// Fetch the authenticated user profile (used by the frontend session bootstrap)
+router.get("/profile", reqAuth, userController.getProfile);
+
 module.exports = router;
