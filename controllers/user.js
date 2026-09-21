@@ -5,7 +5,6 @@ const createToken = require("../token");
 const { sendOtpEmail } = require("../utils/mailer");
 const crypto = require('crypto');
 
-const pendingUsers = new Map();
 const passwordResetSessions = new Map();
 
 const createOtpToken = (email, otp, expiresAt) => {

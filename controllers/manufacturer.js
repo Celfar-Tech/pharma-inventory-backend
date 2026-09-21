@@ -1,6 +1,4 @@
-const validate = require("validator");
 const Manufacturer  = require("../models/manufacturer");
-const createToken = require("../token");
 
 exports.searchManufacturerNames = async (req, res, next) => {
   const searchTerm = req.query.name;
