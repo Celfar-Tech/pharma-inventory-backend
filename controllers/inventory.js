@@ -1,9 +1,5 @@
 
-const validate = require("validator");
 const Inventory = require("../models/inventory");
-const createToken = require("../token");
-const db = require("../database");
-
 
 exports.addInventory = async (req, res, next) => {
 

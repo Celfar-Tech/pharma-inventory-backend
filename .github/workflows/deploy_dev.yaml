@@ -1,36 +1,27 @@
-name: Deploy feature branch to shared VPS folder
+name: Deploy feature branch to shared to dev Environment in VPS
 
 on:
   pull_request:
-    types: [closed]
+    types: [opened, synchronize, reopened]
     branches:
       - main
 
 jobs:
   deploy:
-    if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
-          ref: main
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
       - name: Deploy via SSH
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
+          username: ${{ secrets.SERVER_USER_DEV }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          target: ${{ vars.TARGET_DIR }}
           source: "token.js,index.js,package.json,package-lock.json,database.js,controllers,routes,middleware,models,utils"
+          target: ${{ vars.TARGET_DIR_DEV }}
           overwrite: true
-
-      - name: Restart PM2 instance
-        uses: appleboy/ssh-action@v1.2.1
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: pm2 restart pharma-backend-main

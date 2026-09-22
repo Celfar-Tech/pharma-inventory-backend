@@ -233,7 +233,6 @@ class BillingInvoice {
   }
 
   static async listInvoices(emailid, page, limit) {
-    await BillingInvoice.ensureTablesExist();
     return BillingInvoice.list(emailid, page, limit);
   }
 
