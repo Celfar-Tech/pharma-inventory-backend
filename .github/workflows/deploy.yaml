@@ -29,8 +29,29 @@ jobs:
 
       - name: Restart PM2 instance
         uses: appleboy/ssh-action@v1.2.1
+        env:
+          # Absolute path to the nvm-managed Node bin dir, e.g.
+          # /home/github-act-cicd/.nvm/versions/node/v24.21.0/bin
+          # Non-interactive SSH shells do not load nvm, so PATH must be set explicitly.
+          NODE_BIN: ${{ vars.VPS_NODE_BIN }}
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: pm2 restart pharma-backend-main
+          envs: NODE_BIN
+          script: |
+            set -e
+
+            if [ -n "$NODE_BIN" ]; then
+              export PATH="$NODE_BIN:$PATH"
+            else
+              # Fallback: load nvm so pm2 resolves even if the variable is unset or stale
+              export NVM_DIR="$HOME/.nvm"
+              if [ -s "$NVM_DIR/nvm.sh" ]; then
+                . "$NVM_DIR/nvm.sh"
+                nvm use default >/dev/null 2>&1 || true
+              fi
+            fi
+
+            command -v pm2 >/dev/null || { echo "pm2 not found (NODE_BIN='$NODE_BIN' PATH=$PATH)"; exit 1; }
+            pm2 restart pharma-backend-main
