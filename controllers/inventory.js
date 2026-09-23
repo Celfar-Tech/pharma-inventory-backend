@@ -110,21 +110,17 @@ exports.getInventory = async (req, res, next) => {
       ? searchKeys.map(key => `${key}: "${searchParams[key]}"`).join(', ')
       : 'all inventory';
 
-    if (!medicines || medicines.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: `No medicines found matching parameters (${searchSummary})`,
-        data: [],
-        pagination: pagination
-      });
-    }
+    // An empty result set is NOT an error: the query ran successfully and simply
+    // matched nothing. Returning 404 here makes clients treat "no matches" as a
+    // failure, so we always answer 200 with an (possibly empty) data array.
+    const isEmpty = !medicines || medicines.length === 0;
 
     return res.status(200).json({
       success: true,
-      message: medicines.length > 0
-        ? `Loaded records matching (${searchSummary})`
-        : `No medicines found matching parameters (${searchSummary})`,
-      data: medicines,
+      message: isEmpty
+        ? `No medicines found matching parameters (${searchSummary})`
+        : `Loaded records matching (${searchSummary})`,
+      data: isEmpty ? [] : medicines,
       pagination: pagination
     });
 
@@ -148,18 +144,17 @@ exports.getBatchNumbers = async (req, res, next) => {
     console.log(`Fetching batch numbers for medicine: ${name} and user: ${req.user?.email}`);
     const batchNumbers = await Inventory.getBatchNumbersByName(name.trim(), req.user?.email);
 
-    if (!batchNumbers || batchNumbers.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: `No batch numbers found for medicine "${name}"`,
-        data: []
-      });
-    }
+    // Same rule as search: a medicine with no recorded batches is a valid empty
+    // result, not a missing resource. Always answer 200 so callers can render an
+    // empty state instead of surfacing an error.
+    const isEmpty = !batchNumbers || batchNumbers.length === 0;
 
     return res.status(200).json({
       success: true,
-      message: `Loaded batch numbers for "${name}"`,
-      data: batchNumbers
+      message: isEmpty
+        ? `No batch numbers found for medicine "${name}"`
+        : `Loaded batch numbers for "${name}"`,
+      data: isEmpty ? [] : batchNumbers
     });
   } catch (err) {
     console.error("Batch number fetch error:", err);
