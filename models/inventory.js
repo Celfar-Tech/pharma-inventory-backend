@@ -222,12 +222,15 @@ class Inventory {
     // 4. Get Total Count for Pagination (Reusing the identical whereClauses)
     let totalCount = 0;
     try {
-      let countQuery = "SELECT COUNT(*) as total FROM pharma.inventory";
-      if (whereClauses.length > 0) {
-        countQuery += ` WHERE ${whereClauses.join(' AND ')}`;
-      }
+      // Always scope the count to the logged-in user, even when there are no search filters.
+      const countWhereClauses = [
+        ...whereClauses,
+        `user_name = $${queryValues.length + 1}`,
+      ];
 
-      const countResult = await db.query(countQuery, queryValues);
+      const countQuery = `SELECT COUNT(*) as total FROM pharma.inventory WHERE ${countWhereClauses.join(" AND ")}`;
+
+      const countResult = await db.query(countQuery, [...queryValues, emailid]);
       totalCount = parseInt(countResult.rows[0].total) || 0;
     } catch (countErr) {
       console.warn('Could not get total count:', countErr.message);
