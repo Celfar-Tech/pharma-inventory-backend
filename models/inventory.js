@@ -306,7 +306,7 @@ class Inventory {
     }));
   }
 
-  static async deleteById(id, deletedBy = 'system', reason = 'User Request',useremail) {
+  static async deleteById(id,useremail) {
     // Start a transaction so if anything fails, the database rolls back safely
     await db.query("BEGIN");
 
@@ -329,7 +329,7 @@ class Inventory {
       const oldData = deleteResult.rows[0];
 
       try {
-        await InventoryBackup.insert(oldData, deletedBy, reason);
+        await InventoryBackup.insert(oldData,useremail);
       } catch (backupError) {
         console.error('Failed to backup inventory item:', backupError);
         throw new Error(`Failed to backup inventory item before deletion: ${backupError.message}`);
