@@ -170,16 +170,14 @@ exports.getBatchNumbers = async (req, res, next) => {
 exports.deleteInventory = async (req, res, next) => {
   try {
     const { id } = req.params;
-    //const { user, reason } = req.query;
-    const user = req.user?.username || req.user?.email || req.query.user || "System";
-    const reason = req.query.reason || "User Request";
+  
     if (!id || isNaN(id) || parseInt(id) <= 0) {
       return res.status(400).json({
         success: false,
         message: "Missing required parameter: id"
       });
     }
-    const deletedCount = await Inventory.deleteById(id, user, reason, req.user?.email);
+    const deletedCount = await Inventory.deleteById(id, req.user?.email);
 
     if (deletedCount === 0) {
       return res.status(404).json({

@@ -52,14 +52,14 @@ class InventoryBackup {
    * @param {string} reason - Reason for deletion.
    * @returns {Promise<Object>} Database query result.
    */
-  static async insert(oldData, deletedBy = "system", reason = "User Request") {
+  static async insert(oldData,useremail) {
     const backupQueryStr = `
       INSERT INTO pharma.inventory_backup (
         id, name, manufacturer_name, type, pack_size_label, composition1, 
-        mrp, stock_quantity, purchase_price, selling_price, stock_alert_threshold,
+        mrp,batch_number,shelf_rack_info, stock_quantity, purchase_price, selling_price, stock_alert_threshold,
         expiry_date, user_name, insert_date, update_date, deleted_by, deleted_reason
       ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
       );
     `;
 
@@ -71,6 +71,8 @@ class InventoryBackup {
       oldData.pack_size_label,
       oldData.composition1,
       oldData.mrp,
+      oldData.batch_number,
+      oldData.shelf_rack_info,
       oldData.stock_quantity,
       oldData.purchase_price,
       oldData.selling_price,
@@ -79,8 +81,8 @@ class InventoryBackup {
       oldData.user_name,
       oldData.insert_date,
       oldData.update_date,
-      deletedBy,
-      reason,
+      useremail, // deleted_by
+      'User Request', // deleted_reason
     ];
 
     return db.query(backupQueryStr, backupValues);
