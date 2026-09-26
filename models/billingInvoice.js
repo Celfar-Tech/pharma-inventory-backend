@@ -1,5 +1,7 @@
 const db = require("../database");
 const BillingItem = require("./billingItem");
+const BillingItemBackup = require("./billingItem_backup");
+const InvoiceBackup = require("./invoice_backup");
 
 // Whitelisted calendar-bucket definitions used by the revenue analytics queries below.
 // `sqlUnit` / `seriesStep` are interpolated into the aggregation SQL, but ONLY from this
@@ -335,6 +337,76 @@ class BillingInvoice {
     );
     const row = result.rows[0] || { total: "0", invoice_count: 0 };
     return { total: Number(row.total), invoiceCount: row.invoice_count };
+  }
+
+  /**
+   * Deletes an invoice and all of its line items for the given owner.
+   *
+   * The header row is snapshotted into pharma.billing_invoice_backup and every line item into
+   * pharma.billing_items_backup for audit purposes, then the line items and the header are
+   * removed — all inside one transaction, so an invoice can never end up deleted while its
+   * items (or its audit rows) survive, or vice-versa.
+   *
+   * pharma.billing_items.invoice_number already references the header with ON DELETE CASCADE,
+   * but the children are deleted explicitly first so correctness does not depend on that
+   * constraint existing (e.g. a legacy table created without it).
+   *
+   * @param {string} invoiceNumber - Invoice number to delete.
+   * @param {string} emailid - Owner (created_by) email; users may only delete their own invoices.
+   * @returns {Promise<{invoiceNumber: string, deletedItems: number}|null>} `null` when no
+   *   matching invoice exists for this user (the caller maps this to 404).
+   */
+  static async deleteInvoiceWithItems(invoiceNumber, emailid) {
+    await BillingInvoice.ensureTablesExist();
+    await InvoiceBackup.ensureTableExists();
+    await BillingItemBackup.ensureTableExists();
+
+    const client = await db.pool.connect();
+    try {
+     
+
+      // Row lock + full snapshot in one round trip; also serves as the ownership check.
+      const found = await client.query(
+        `SELECT * FROM pharma.billing_invoice
+         WHERE invoice_number = $1 AND created_by = $2
+         FOR UPDATE;`,
+        [invoiceNumber, emailid]
+      );
+
+      const oldInvoice = found.rows[0];
+      if (!oldInvoice) {
+        await client.query("ROLLBACK");
+        return null;
+      }
+
+      // Audit trail first: if a backup insert fails, the whole deletion rolls back below.
+      await InvoiceBackup.insert(oldInvoice, emailid, client);
+
+      // The DELETE ... RETURNING * gives us the exact rows to snapshot, so the item backup
+      // can never drift from what was actually removed.
+      const deletedItemRows = await BillingItem.deleteByInvoiceNumber(client, invoiceNumber);
+      await BillingItemBackup.insertMany(deletedItemRows, emailid, client);
+
+      const deletedInvoice = await client.query(
+        `DELETE FROM pharma.billing_invoice
+         WHERE invoice_number = $1 AND created_by = $2
+         RETURNING invoice_number;`,
+        [invoiceNumber, emailid]
+      );
+
+      if (deletedInvoice.rowCount === 0) {
+        await client.query("ROLLBACK");
+        return null;
+      }
+
+      await client.query("COMMIT");
+      return { invoiceNumber: deletedInvoice.rows[0].invoice_number, deletedItems: deletedItemRows.length };
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 }
 

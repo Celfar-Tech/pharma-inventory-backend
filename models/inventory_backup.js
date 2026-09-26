@@ -17,7 +17,7 @@ class InventoryBackup {
 
     const createBackupTableQuery = `
       CREATE TABLE IF NOT EXISTS pharma.inventory_backup (
-        id SERIAL PRIMARY KEY,
+        id SERIAL PRIMARY KEY, 
         name VARCHAR(500) NOT NULL,
         manufacturer_name VARCHAR(500) NOT NULL,
         type VARCHAR(50) NOT NULL,

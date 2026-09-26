@@ -313,3 +313,34 @@ exports.updateInvoice = async (req, res) => {
   }
 };
 
+exports.deleteInvoice = async (req, res) => {
+  const { invoiceNumber } = req.params;
+
+  if (!invoiceNumber || !invoiceNumber.trim()) {
+    return res.status(400).json({ success: false, error: "Invoice number is required" });
+  }
+
+  try {
+    // Ownership is enforced in the model via created_by = the authenticated session's email,
+    // so a user can never delete another user's invoice.
+    const result = await BillingInvoice.deleteInvoiceWithItems(invoiceNumber.trim(), req.user?.email || null);
+
+    if (!result) {
+      return res.status(404).json({ success: false, error: `No invoice found with number "${invoiceNumber}"` });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: `Invoice "${result.invoiceNumber}" deleted successfully along with ${result.deletedItems} item(s)`,
+      data: result,
+    });
+  } catch (err) {
+    console.error("Invoice deletion error:", err);
+    return res.status(500).json({
+      success: false,
+      error: "Failed to delete invoice",
+      errorId: `ERR-${Date.now()}`,
+    });
+  }
+};
+
