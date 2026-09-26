@@ -80,6 +80,23 @@ class BillingItem {
     if (!items.length) return [];
     return BillingItem.bulkCreate(client, invoiceNumber, items);
   }
+
+  /**
+   * Removes every line item belonging to an invoice and returns the removed rows.
+   * Runs on the caller-supplied client so it participates in the invoice delete transaction
+   * (a failure here must roll back the invoice header deletion as well).
+   * RETURNING * is used so the caller can snapshot the exact deleted rows into
+   * pharma.billing_items_backup without a second (and potentially racy) SELECT.
+   * @param {object} client - Pool or transaction client.
+   * @param {string} invoiceNumber - Invoice whose items should be removed.
+   * @returns {Promise<Array<Object>>} The deleted rows (empty array when the invoice had no items).
+   */
+  static async deleteByInvoiceNumber(client, invoiceNumber) {
+    const result = await client.query(`DELETE FROM pharma.billing_items WHERE invoice_number = $1 RETURNING *;`, [
+      invoiceNumber,
+    ]);
+    return result.rows;
+  }
 }
 
 module.exports = BillingItem;
