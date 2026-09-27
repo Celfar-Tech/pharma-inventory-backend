@@ -49,10 +49,11 @@ class InventoryBackup {
    * @async
    * @param {Object} oldData - The deleted inventory row.
    * @param {string} deletedBy - Identifier of who deleted the record.
-   * @param {string} reason - Reason for deletion.
+   * @param {import('pg').PoolClient|import('pg').Pool} [client=db] - Optional
+   *   client so the snapshot can run inside the caller's transaction.
    * @returns {Promise<Object>} Database query result.
    */
-  static async insert(oldData,useremail) {
+  static async insert(oldData, useremail, client = db) {
     const backupQueryStr = `
       INSERT INTO pharma.inventory_backup (
         id, name, manufacturer_name, type, pack_size_label, composition1, 
@@ -85,7 +86,7 @@ class InventoryBackup {
       'User Request', // deleted_reason
     ];
 
-    return db.query(backupQueryStr, backupValues);
+    return client.query(backupQueryStr, backupValues);
   }
 }
 

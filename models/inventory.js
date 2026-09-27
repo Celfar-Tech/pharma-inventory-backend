@@ -1,5 +1,76 @@
 const db = require("../database");
 const InventoryBackup = require("./inventory_backup");
+
+/**
+ * PostgreSQL SQLSTATE codes mapped to operator-friendly messages.
+ * @see https://www.postgresql.org/docs/current/errcodes-appendix.html
+ */
+const PG_ERROR_MESSAGES = {
+  "08000": "the database connection could not be established",
+  "08003": "the database connection is not open",
+  "08006": "the database connection was lost",
+  "22001": "a field value is too long for its column",
+  "22P02": "a field value has an invalid format",
+  "23502": "a required field was missing",
+  "23503": "a related record constraint was violated",
+  "23505": "a record with the same medicine identity already exists",
+  "23514": "a field value violates a database constraint",
+  "42501": "the database user lacks permission for this operation",
+  "42P01": "a required table is missing",
+  "42P07": "a required database object already exists",
+  "53300": "too many database connections are in use",
+  "57014": "the database query was cancelled or timed out",
+};
+
+/**
+ * Domain-level error raised by the inventory model. The original driver error is
+ * always preserved on `cause` so callers can log low-level detail while still
+ * surfacing a readable message.
+ * @class
+ * @extends Error
+ */
+class InventoryError extends Error {
+  /**
+   * @param {string} message - Human readable, operator-safe message.
+   * @param {Object} [options]
+   * @param {string} [options.code] - Original PostgreSQL SQLSTATE code.
+   * @param {string} [options.details] - Original PostgreSQL error detail.
+   * @param {Error} [options.cause] - Original error thrown by `pg`.
+   */
+  constructor(message, { code, details, cause } = {}) {
+    super(message);
+    this.name = "InventoryError";
+    if (code) this.code = code;
+    if (details) this.details = details;
+    if (cause) this.cause = cause;
+  }
+}
+
+/**
+ * Normalises any error thrown by `pg` into an {@link InventoryError}, adding the
+ * failing operation and caller context while keeping the SQLSTATE/cause intact.
+ * @param {unknown} error - The error thrown by the driver.
+ * @param {string} operation - Name of the failing operation, for context.
+ * @param {Object} [meta={}] - Key/value context (user, id, name, ...).
+ * @returns {InventoryError}
+ */
+function wrapDbError(error, operation, meta = {}) {
+  if (error instanceof InventoryError) return error;
+
+  const code = error && error.code;
+  const readable =
+    PG_ERROR_MESSAGES[code] || (error && error.message) || "unknown database error";
+  const context = Object.entries(meta)
+    .filter(([, value]) => value !== undefined && value !== null && value !== "")
+    .map(([key, value]) => `${key}=${value}`)
+    .join(", ");
+
+  return new InventoryError(
+    `${operation} failed${context ? ` [${context}]` : ""}: ${readable}`,
+    { code, details: error && error.detail, cause: error }
+  );
+}
+
 /**
  * Represents an inventory item with medicine details and stock information.
  * @class
@@ -68,7 +139,6 @@ class Inventory {
   static async ensureTableExists() {
     // 1. Create the schema if it doesn't exist
     const createSchemaQuery = "CREATE SCHEMA IF NOT EXISTS pharma;";
-    await db.query(createSchemaQuery);
 
     const createTableQuery = `
      CREATE TABLE IF NOT EXISTS pharma.inventory (
@@ -92,9 +162,14 @@ class Inventory {
     CONSTRAINT unique_medicine_identity UNIQUE (name, manufacturer_name, pack_size_label, composition1, user_name, batch_number)
 );
     `;
-    await db.query(createTableQuery);
 
-    await InventoryBackup.ensureTableExists();
+    try {
+      await db.query(createSchemaQuery);
+      await db.query(createTableQuery);
+      await InventoryBackup.ensureTableExists();
+    } catch (error) {
+      throw wrapDbError(error, "Inventory.ensureTableExists");
+    }
   }
 
   /**
@@ -108,7 +183,7 @@ class Inventory {
     try {
       await Inventory.ensureTableExists();
     } catch (error) {
-      throw new Error(`Failed to ensure inventory table exists: ${error.message}`);
+      throw wrapDbError(error, "Inventory.addInventory.tableSetup", { name: this.name });
     }
 
     const query = `
@@ -134,24 +209,32 @@ class Inventory {
       RETURNING *;
     `;
 
-    return db.query(query, [
-      this.name,
-      this.manufacturerName,
-      this.type,
-      this.packSizeLabel,
-      this.composition1,
-      this.mrp,
-      this.batchNumber,
-      this.shelfRackInfo,
-      this.stockQuantity,
-      this.purchasePrice,
-      this.sellingPrice,
-      this.stockAlertThreshold,
-      this.expiryDate,
-      this.userName,
-      this.insertDate,
-      this.updateDate,
-    ]);
+    try {
+      return await db.query(query, [
+        this.name,
+        this.manufacturerName,
+        this.type,
+        this.packSizeLabel,
+        this.composition1,
+        this.mrp,
+        this.batchNumber,
+        this.shelfRackInfo,
+        this.stockQuantity,
+        this.purchasePrice,
+        this.sellingPrice,
+        this.stockAlertThreshold,
+        this.expiryDate,
+        this.userName,
+        this.insertDate,
+        this.updateDate,
+      ]);
+    } catch (error) {
+      throw wrapDbError(error, "Inventory.addInventory", {
+        name: this.name,
+        batchNumber: this.batchNumber,
+        userName: this.userName,
+      });
+    }
   }
 
   /**
@@ -181,6 +264,11 @@ class Inventory {
     const allowedColumns = ["name", "manufacturer_name", "type", "composition1", "batch_number"];
 
     const safeUserOrderBy = allowedColumns.includes(userOrderBy) ? userOrderBy : "name";
+
+    // Coerce and clamp pagination values: they are interpolated into the SQL
+    // string below, so they must be validated numbers, never raw input.
+    const safePage = Math.max(1, Number.parseInt(page, 10) || 1);
+    const safeLimit = Math.min(50, Math.max(1, Number.parseInt(limit, 10) || 50));
 
     const whereClauses = [];
     const queryValues = [];
@@ -260,28 +348,40 @@ class Inventory {
       queryStr += " ORDER BY insert_date DESC";
     }
     // Pagination bounds
-    const offset = (page - 1) * limit;
-    queryStr += ` LIMIT ${limit} OFFSET ${offset};`;
+    const offset = (safePage - 1) * safeLimit;
+    queryStr += ` LIMIT ${safeLimit} OFFSET ${offset};`;
 
-    const result = await db.query(queryStr, queryValues);
-    const records = result.rows;
+    let result;
+    try {
+      result = await db.query(queryStr, queryValues);
+    } catch (error) {
+      throw wrapDbError(error, "Inventory.searchInventory", {
+        userName: emailid,
+        orderBy: safeUserOrderBy,
+        page: safePage,
+        limit: safeLimit,
+      });
+    }
 
-    // Calculate pagination metadata
-    const totalPages = Math.ceil(totalCount / limit);
-    const hasNext = page < totalPages;
-    const hasPrev = page > 1;
+    const records = result && Array.isArray(result.rows) ? result.rows : [];
+
+    // Calculate pagination metadata (uses the validated values, so a bad
+    // `limit` of 0 can never produce an Infinity page count).
+    const totalPages = Math.ceil(totalCount / safeLimit);
+    const hasNext = safePage < totalPages;
+    const hasPrev = safePage > 1;
 
     return {
       data: records,
       pagination: {
-        page: page,
-        limit: limit,
+        page: safePage,
+        limit: safeLimit,
         total: totalCount,
         totalPages: totalPages,
         hasNext: hasNext,
         hasPrev: hasPrev,
-        hasNextPage: hasNext ? page + 1 : null,
-        hasPrevPage: hasPrev ? page - 1 : null
+        hasNextPage: hasNext ? safePage + 1 : null,
+        hasPrevPage: hasPrev ? safePage - 1 : null
       }
     };
   }
@@ -295,8 +395,25 @@ class Inventory {
    * @throws {Error} If database operations fail
    */
   static async getBatchNumbersByName(name, emailid) {
+    if (!name || typeof name !== "string" || name.trim() === "") {
+      throw new InventoryError("A medicine name is required to fetch batch numbers.");
+    }
+
     const queryStr = "SELECT batch_number,mrp, selling_price, expiry_date FROM pharma.inventory WHERE name = $1 AND user_name = $2;";
-    const result = await db.query(queryStr, [name, emailid]);
+
+    let result;
+    try {
+      result = await db.query(queryStr, [name.trim(), emailid]);
+    } catch (error) {
+      throw wrapDbError(error, "Inventory.getBatchNumbersByName", {
+        name,
+        userName: emailid,
+      });
+    }
+
+    if (!result || !Array.isArray(result.rows)) {
+      return [];
+    }
 
     return result.rows.map(row => ({
       batchNumber: row.batch_number,
@@ -306,22 +423,49 @@ class Inventory {
     }));
   }
 
-  static async deleteById(id,useremail) {
-    // Start a transaction so if anything fails, the database rolls back safely
-    await db.query("BEGIN");
+  /**
+   * Deletes an inventory record and stores an audit copy in the backup table.
+   * Runs on a single pooled client so the delete and the backup snapshot are
+   * committed or rolled back atomically.
+   * @static
+   * @async
+   * @param {number|string} id - Inventory record id.
+   * @param {string} useremail - Owner scope (`pharma.inventory.user_name`).
+   * @returns {Promise<number>} `1` when a row was deleted, `0` when nothing matched.
+   * @throws {InventoryError} When validation fails or the transaction cannot complete.
+   */
+  static async deleteById(id, useremail) {
+    const numericId = Number.parseInt(id, 10);
+    if (!Number.isInteger(numericId) || numericId <= 0) {
+      throw new InventoryError(`Invalid inventory id: ${id}`);
+    }
+
+    // A dedicated client is required: db.query() can hand out a different pooled
+    // connection per call, which would break BEGIN/COMMIT atomicity entirely.
+    let client;
+    try {
+      client = await db.pool.connect();
+    } catch (error) {
+      throw wrapDbError(error, "Inventory.deleteById.connect", {
+        id: numericId,
+        userName: useremail,
+      });
+    }
 
     try {
+      await client.query("BEGIN");
+
       // 1. Delete the item and IMMEDIATELY return its data using RETURNING *
       const deleteQueryStr = `
       DELETE FROM pharma.inventory 
       WHERE id = $1 and user_name = $2
       RETURNING *;
     `;
-      const deleteResult = await db.query(deleteQueryStr, [id, useremail]);
+      const deleteResult = await client.query(deleteQueryStr, [numericId, useremail]);
 
-      // If no row was found/deleted, roll back and return 0
+      // If no row was found/deleted, roll back and report "not found".
       if (deleteResult.rowCount === 0) {
-        await db.query("ROLLBACK");
+        await client.query("ROLLBACK");
         return 0;
       }
 
@@ -329,20 +473,33 @@ class Inventory {
       const oldData = deleteResult.rows[0];
 
       try {
-        await InventoryBackup.insert(oldData,useremail);
+        await InventoryBackup.insert(oldData, useremail, client);
       } catch (backupError) {
-        console.error('Failed to backup inventory item:', backupError);
-        throw new Error(`Failed to backup inventory item before deletion: ${backupError.message}`);
+        throw wrapDbError(backupError, "Inventory.deleteById.backup", {
+          id: numericId,
+          userName: useremail,
+        });
       }
 
       // Everything worked smoothly. Commit the transaction permanent!
-      await db.query("COMMIT");
+      await client.query("COMMIT");
       return 1;
 
     } catch (error) {
-      // If anything blew up during backup, cancel the deletion completely
-      await db.query("ROLLBACK");
-      throw error;
+      // If anything blew up during backup, cancel the deletion completely.
+      try {
+        await client.query("ROLLBACK");
+      } catch (rollbackError) {
+        // Never let a rollback failure mask the original error.
+        console.error("[Inventory] Failed to roll back delete transaction:", rollbackError.message);
+      }
+
+      throw error instanceof InventoryError
+        ? error
+        : wrapDbError(error, "Inventory.deleteById", { id: numericId, userName: useremail });
+    } finally {
+      // Always return the connection to the pool, even on failure.
+      client.release();
     }
   }
 }
