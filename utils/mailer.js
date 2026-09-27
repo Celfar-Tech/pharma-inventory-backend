@@ -1,14 +1,14 @@
 const nodemailer = require("nodemailer");
-console.log("📧 Loading Mailer with User:", process.env.EMAIL_USER ? "FOUND ✅" : "MISSING ❌");
 // 1. Configure your email transporter
 const transporter = nodemailer.createTransport({
-  service: "gmail",
+  host: "smtpout.secureserver.net",
+  port: 465,
+  secure: true, // Must be true for port 465
   auth: {
-    user: process.env.EMAIL_USER,
+    user: process.env.EMAIL_USER,        
     pass: process.env.EMAIL_APP_PASSWORD,
   },
 });
-
 // 2. Export the sendOtpEmail function
 const sendOtpEmail = async (toEmail, otp) => {
   const mailOptions = {
