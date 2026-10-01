@@ -13,8 +13,9 @@
  *     httpSummary) that adapt `req.query` -> validated params -> HTTP JSON response.
  *
  * This keeps the HTTP layer and the agent layer on exactly the same code path, so a chart
- * and an AI answer can never drift apart. All values returned are derived from
- * pharma.billing_invoice via the existing BillingInvoice model.
+ * and an AI answer can never drift apart. Revenue values are derived from pharma.billing_invoice
+ * via the existing BillingInvoice model, except the best-selling-medicine leaderboard which reads
+ * the pharma.mv_daily_medicine_sales rollup through the Dashboard model.
  *
  * Timezone / date semantics
  * -------------------------
@@ -27,8 +28,33 @@
  */
 
 const BillingInvoice = require("../models/billingInvoice");
+const Dashboard = require("../models/dashboard");
+// Named exports of the same module (the model's default export is the Dashboard class).
+const { DashboardViewError, MV_NAME } = Dashboard;
 
 const CURRENCY = "INR";
+
+// Ranking metric behind the best-selling-medicine leaderboard. `quantity` ranks by units sold,
+// `revenue` by money. The server ranks the (capped) page by this metric so it is a true top-N,
+// and the frontend may re-sort the returned rows client-side by either column.
+const TOP_SELLING_SORTS = Object.freeze(["quantity", "revenue"]);
+const TOP_SELLING_SORT_DEFAULT = "quantity";
+
+// Medicines returned in the leaderboard — i.e. the "records to show" page size the frontend
+// picks from a dropdown. Defaults to 50; the 200 cap keeps payload size and render cost bounded
+// while still allowing a full ranking of a large catalogue.
+const DEFAULT_TOP_MEDICINES = 50;
+const MAX_TOP_MEDICINES = 200;
+
+// Page sizes offered by the frontend "records to show" dropdown. Echoed back in the response
+// (`pageSize.options`) so the UI never hardcodes a list that could drift from server validation.
+const TOP_MEDICINE_OPTIONS = Object.freeze([10, 25, 50, 100]);
+
+// A rollup refresh rebuilds the view for every owner, so it is a maintenance action rather
+// than a per-user read. Repeated calls inside this window are debounced instead of re-running
+// the rebuild; override with MV_REFRESH_MIN_INTERVAL_SECONDS (0 disables the debounce).
+const MV_REFRESH_MIN_INTERVAL_MS =
+  Math.max(Number(process.env.MV_REFRESH_MIN_INTERVAL_SECONDS ?? 300) || 0, 0) * 1000;
 
 const GRANULARITIES = Object.freeze(["day", "week", "month"]);
 const GRANULARITY_DEFAULT = "day";
@@ -246,6 +272,66 @@ async function buildRevenueResult({ email, granularity, timeframe, startDate, en
   };
 }
 
+// Shapes the flat best-selling-medicine rows into a leaderboard: adds a 1-based `rank`, computes
+// headline rollups, and surfaces the best medicine by each metric so the frontend can label its
+// "sort by units / sort by revenue" toggle without re-deriving them.
+function buildTopSellingResult({
+  series,
+  startDate,
+  endDate,
+  days,
+  sortBy,
+  dataThrough = null,
+  limit = DEFAULT_TOP_MEDICINES,
+}) {
+  // Rows arrive already ordered by the requested metric; `rank` makes that explicit for tables.
+  const medicines = series.map((row, index) => ({ rank: index + 1, ...row }));
+
+  let totalQuantitySold = 0;
+  let totalRevenue = 0;
+  for (const row of medicines) {
+    totalQuantitySold += row.totalQuantitySold;
+    totalRevenue += row.totalRevenue;
+  }
+
+  const bestBy = (metric) =>
+    medicines.reduce((best, row) => (!best || row[metric] > best[metric] ? row : best), null);
+
+  const bestByQuantity = bestBy("totalQuantitySold");
+  const bestByRevenue = bestBy("totalRevenue");
+
+  return {
+    currency: CURRENCY,
+    range: { startDate, endDate },
+    lookbackDays: days,
+    // Latest business day present in the rollup. The view is a snapshot, so the UI can show
+    // "as of <date>" instead of implying the numbers are live to the second.
+    dataThrough,
+    source: MV_NAME,
+    // Which metric the server ranked by, plus the accepted values, so the UI can drive its
+    // "sort by" control from the API instead of hardcoding it.
+    sort: { by: sortBy, options: TOP_SELLING_SORTS },
+    // Lets the frontend drive its "records to show" dropdown from the API: `options` are the
+    // suggested page sizes, `limit` is what was applied, and at most `limit` medicines are
+    // returned (so the series length is at most `limit`).
+    pageSize: {
+      limit,
+      options: TOP_MEDICINE_OPTIONS,
+      max: MAX_TOP_MEDICINES,
+    },
+    // Flat, chart/table-friendly rows, ordered by `sort.by`:
+    // [{ rank, medicineId, medicineName, totalQuantitySold, totalRevenue }]
+    series: medicines,
+    summary: {
+      medicineCount: medicines.length,
+      totalQuantitySold,
+      totalRevenue: round2(totalRevenue),
+      bestByQuantity: bestByQuantity ? { ...bestByQuantity } : null,
+      bestByRevenue: bestByRevenue ? { ...bestByRevenue } : null,
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // AI-agent tool functions (data-access + validation, shared with HTTP layer)
 // ---------------------------------------------------------------------------
@@ -440,6 +526,149 @@ async function getSalesSummary(params = {}) {
   };
 }
 
+/**
+ * Best-selling medicines over a date window — a single ranked leaderboard, not per-period buckets.
+ *
+ * Returns one row per medicine with its total units sold and total revenue across the whole
+ * window (last 30 days by default, or an explicit startDate/endDate override). Rows are ordered
+ * by `sortBy` (`quantity` by default, or `revenue`) so a capped page is the true top-N for that
+ * metric; the frontend can re-sort the returned rows by either column for its own toggle.
+ *
+ * Data comes from the `pharma.mv_daily_medicine_sales` rollup rather than the billing tables
+ * (see models/dashboard.js), so `dataThrough` reports how fresh the numbers are. If the rollup
+ * has never been created this throws a `DashboardViewError`, which the HTTP layer surfaces as
+ * a 503 with a hint pointing at the refresh endpoint.
+ *
+ * @param {object} params
+ * @param {string} params.email - Owner email (created_by) the invoices belong to.
+ * @param {number} [params.days=30] - Trailing calendar days to look back (1-370).
+ * @param {number} [params.limit=50] - Max medicines returned, ranked by sortBy (1-200). Backs the
+ *   frontend "records to show" dropdown; see `TOP_MEDICINE_OPTIONS` for the offered page sizes.
+ * @param {"quantity"|"revenue"} [params.sortBy="quantity"] - Ranking metric.
+ * @param {string} [params.startDate] - Optional inclusive start override (YYYY-MM-DD).
+ * @param {string} [params.endDate] - Optional inclusive end override (YYYY-MM-DD).
+ * @returns {Promise<object>} { currency, range, lookbackDays, dataThrough, source, sort, pageSize, series, summary }
+ */
+async function getTopSellingMedicines(params = {}) {
+  const email = requireEmail(params.email);
+  const days = intParam(params.days, {
+    name: "days",
+    min: 1,
+    max: MAX_DAYS,
+    fallback: DEFAULT_DAYS,
+  });
+  const limit = intParam(params.limit, {
+    name: "limit",
+    min: 1,
+    max: MAX_TOP_MEDICINES,
+    fallback: DEFAULT_TOP_MEDICINES,
+  });
+  const sortBy = enumParam(params.sortBy, {
+    name: "sortBy",
+    allowed: TOP_SELLING_SORTS,
+    fallback: TOP_SELLING_SORT_DEFAULT,
+  });
+
+  const { startDate, endDate } = await resolveWindow({
+    startDate: params.startDate,
+    endDate: params.endDate,
+    amount: days,
+    unit: "day",
+  });
+  assertWithinSpan(startDate, endDate, "day");
+
+  const series = await Dashboard.topSellingMedicines({
+    emailid: email,
+    startDate,
+    endDate,
+    limit,
+    sortBy,
+  });
+
+  // Freshness is best-effort: if the rollup disappears mid-request, still return the series.
+  const dataThrough = await Dashboard.topSellingDataThrough(email);
+
+  return buildTopSellingResult({ series, startDate, endDate, days, sortBy, dataThrough, limit });
+}
+
+// Timestamp/result of the last rollup rebuild, plus the in-flight promise so that concurrent
+// requests coalesce into a single REFRESH instead of queueing one rebuild each.
+let lastTopSellingRefresh = null;
+let inFlightTopSellingRefresh = null;
+
+/**
+ * Rebuilds pharma.mv_daily_medicine_sales so the top-selling-medicine endpoint picks up new
+ * sales.
+ *
+ * This is a **maintenance** action, not a per-user read: a refresh rebuilds the view for every
+ * owner, so it is deliberately kept out of the `agentTools` manifest and guarded two ways:
+ *
+ *  - **debounced** — a second call within `MV_REFRESH_MIN_INTERVAL_MS` (default 5 minutes,
+ *    override with `MV_REFRESH_MIN_INTERVAL_SECONDS`) returns `refreshed: false` immediately
+ *    rather than re-running the rebuild; pass `force=true` to bypass it, and
+ *  - **coalesced** — concurrent callers share one in-flight rebuild.
+ *
+ * The view is created first when missing, so a fresh database can be provisioned by calling
+ * this once. Note the debounce state is per Node process; with several instances behind a load
+ * balancer each may refresh at most once per interval, which is harmless.
+ *
+ * @param {object} [params]
+ * @param {boolean} [params.force=false] - Bypass the debounce window.
+ * @param {boolean} [params.concurrently=true] - Set false to force a blocking rebuild.
+ * @returns {Promise<object>} { refreshed, reason?, concurrently, durationMs, lastRefreshedAt, nextAllowedInSeconds }
+ */
+async function refreshTopSellingMedicines(params = {}) {
+  const force = params.force === true || params.force === "true";
+  const concurrently = params.concurrently !== false && params.concurrently !== "false";
+
+  const nextAllowedInSeconds = () => {
+    if (!lastTopSellingRefresh || MV_REFRESH_MIN_INTERVAL_MS === 0) return 0;
+    const elapsed = Date.now() - lastTopSellingRefresh.at.getTime();
+    return Math.max(0, Math.ceil((MV_REFRESH_MIN_INTERVAL_MS - elapsed) / 1000));
+  };
+
+  // Cache hit: report the previous rebuild instead of starting another one.
+  if (!force && lastTopSellingRefresh && nextAllowedInSeconds() > 0) {
+    return {
+      refreshed: false,
+      reason: `debounced: last refresh was less than ${MV_REFRESH_MIN_INTERVAL_MS / 1000}s ago`,
+      ...lastTopSellingRefresh.result,
+      lastRefreshedAt: lastTopSellingRefresh.at.toISOString(),
+      nextAllowedInSeconds: nextAllowedInSeconds(),
+    };
+  }
+
+  // A rebuild is already running — await it rather than stacking another on the database.
+  if (inFlightTopSellingRefresh) {
+    const result = await inFlightTopSellingRefresh;
+    return {
+      refreshed: false,
+      reason: "coalesced with an in-flight refresh",
+      ...result,
+      lastRefreshedAt: lastTopSellingRefresh?.at.toISOString() ?? null,
+      nextAllowedInSeconds: nextAllowedInSeconds(),
+    };
+  }
+
+  inFlightTopSellingRefresh = (async () => {
+    await Dashboard.ensureDailyMedicineSalesView();
+    return Dashboard.refreshDailyMedicineSalesView({ concurrently });
+  })();
+
+  try {
+    const result = await inFlightTopSellingRefresh;
+    lastTopSellingRefresh = { at: new Date(), result };
+    return {
+      refreshed: true,
+      ...result,
+      lastRefreshedAt: lastTopSellingRefresh.at.toISOString(),
+      nextAllowedInSeconds: nextAllowedInSeconds(),
+    };
+  } finally {
+    inFlightTopSellingRefresh = null;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // JSON Schemas + agent tool manifest (maps natural-language intent to a function call)
 // ---------------------------------------------------------------------------
@@ -537,6 +766,44 @@ getCustomRangeSales.parameters = {
   required: ["email", "startDate", "endDate"],
 };
 
+getTopSellingMedicines.description =
+  "Returns a leaderboard of the best-selling medicines over a date window (last 30 days by " +
+  "default), each with its total units sold and total revenue, ranked highest-to-lowest by the " +
+  "chosen metric. Use when the user asks which medicine sold the most, wants a top-N product " +
+  "ranking, or asks for best sellers over a period — not for a per-day/week/month breakdown.";
+getTopSellingMedicines.parameters = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    email: { type: "string", description: "Owner email (created_by) to scope results to." },
+    days: {
+      type: "integer",
+      minimum: 1,
+      maximum: MAX_DAYS,
+      default: DEFAULT_DAYS,
+      description: "Number of trailing calendar days to include, ending with today.",
+    },
+    limit: {
+      type: "integer",
+      minimum: 1,
+      maximum: MAX_TOP_MEDICINES,
+      default: DEFAULT_TOP_MEDICINES,
+      description:
+        `Maximum medicines returned, ranked by sortBy. Mirrors the frontend "records to ` +
+        `show" dropdown; suggested page sizes are ${TOP_MEDICINE_OPTIONS.join(", ")}.`,
+    },
+    sortBy: {
+      type: "string",
+      enum: TOP_SELLING_SORTS,
+      default: TOP_SELLING_SORT_DEFAULT,
+      description: "Ranking metric: total units sold (quantity) or total revenue (revenue).",
+    },
+    startDate: { ...dateProp, description: "Optional inclusive start override (YYYY-MM-DD)." },
+    endDate: { ...dateProp, description: "Optional inclusive end override (YYYY-MM-DD). Defaults to today." },
+  },
+  required: ["email"],
+};
+
 getSalesSummary.description =
   "Returns headline sales KPI rollups (currency totals + invoice counts) for today, this week, " +
   "this month and the trailing 30 days. Use for summary cards or when the user asks 'how much did " +
@@ -558,6 +825,7 @@ const TOOL_FUNCTIONS = Object.freeze({
   getWeeklySales,
   getCustomRangeSales,
   getSalesSummary,
+  getTopSellingMedicines,
 });
 
 /**
@@ -598,6 +866,10 @@ function toHttpHandler(toolFunction) {
       if (err instanceof DashboardError) {
         return res.status(err.status).json({ success: false, error: err.message });
       }
+      // Rollup not provisioned / unusable: actionable 503 rather than a generic 500.
+      if (err instanceof DashboardViewError) {
+        return res.status(err.status).json({ success: false, error: err.message, hint: err.hint });
+      }
       console.error("Dashboard revenue error:", err);
       return res.status(500).json({ success: false, error: "Internal server error" });
     }
@@ -609,6 +881,22 @@ const httpMonthly = toHttpHandler(getMonthlySales);
 const httpWeekly = toHttpHandler(getWeeklySales);
 const httpCustomRange = toHttpHandler(getCustomRangeSales);
 const httpSummary = toHttpHandler(getSalesSummary);
+const httpTopSellingMedicines = toHttpHandler(getTopSellingMedicines);
+
+// POST: rebuilds the rollup behind /top-selling-medicines (debounced maintenance action).
+async function httpRefreshTopSellingMedicines(req, res) {
+  try {
+    // Body wins over query so a POST with a JSON body can set force/concurrently.
+    const data = await refreshTopSellingMedicines({ ...req.query, ...(req.body || {}) });
+    return res.status(200).json({ success: true, data });
+  } catch (err) {
+    if (err instanceof DashboardViewError) {
+      return res.status(err.status).json({ success: false, error: err.message, hint: err.hint });
+    }
+    console.error("Dashboard top-selling refresh error:", err);
+    return res.status(500).json({ success: false, error: "Internal server error" });
+  }
+}
 
 module.exports = {
   // Data-access functions — callable directly by an agent/integration layer.
@@ -617,6 +905,7 @@ module.exports = {
   getWeeklySales,
   getCustomRangeSales,
   getSalesSummary,
+  getTopSellingMedicines,
   // Tool manifest for intent -> function mapping (JSON Schema included).
   agentTools,
   // Express handlers.
@@ -626,8 +915,19 @@ module.exports = {
   httpWeekly,
   httpCustomRange,
   httpSummary,
+  httpTopSellingMedicines,
+  // Rollup maintenance: rebuilds pharma.mv_daily_medicine_sales (debounced).
+  refreshTopSellingMedicines,
+  httpRefreshTopSellingMedicines,
   DashboardError,
+  DashboardViewError,
   // Re-exported constants for introspection/testing.
   GRANULARITIES,
+  TOP_SELLING_SORTS,
+  TOP_SELLING_SORT_DEFAULT,
+  MV_NAME,
   CURRENCY,
+  TOP_MEDICINE_OPTIONS,
+  DEFAULT_TOP_MEDICINES,
+  MAX_TOP_MEDICINES,
 };
