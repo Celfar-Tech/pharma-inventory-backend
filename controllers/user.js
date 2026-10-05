@@ -152,6 +152,9 @@ exports.logIn = async (req, res, next) => {
 };
 exports.logOut = (req, res) => {
   res.clearCookie('has_session');
+  // The client-readable `user` cookie is set at login, so it must be cleared
+  // here too — otherwise it outlives the session it describes.
+  res.clearCookie('user');
   res.clearCookie('token', {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
