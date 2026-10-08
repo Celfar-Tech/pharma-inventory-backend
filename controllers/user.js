@@ -142,7 +142,7 @@ exports.logIn = async (req, res, next) => {
 
     return res.status(200).json({
       success: true,
-      user: userData
+      user: userData,
     });
 
   } catch (err) {

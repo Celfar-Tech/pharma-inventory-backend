@@ -7,6 +7,7 @@ const manufacturerRoutes = require("./routes/manufacturer");
 const inventoryRoutes = require("./routes/inventory");
 const billingRoutes = require("./routes/billing");
 const dashboardRoutes = require("./routes/dashboard");
+const bookRoutes = require("./routes/book");
 const app = express();
 const bodyParser = require("body-parser");
 const reqAuth = require("./middleware/reqAuth");
@@ -62,12 +63,15 @@ app.get("/health", (req, res) => {
   res.status(200).json({ status: "ok", uptime: process.uptime() });
 });
 
-app.use("/user/", authLimiter, userRoutes);
+app.use("/user", authLimiter, userRoutes);
+app.use("/api/user", authLimiter, userRoutes);
 app.use("/medicine/", reqAuth, medicineRoutes);
 app.use("/inventory/", reqAuth, inventoryRoutes);
 app.use("/manufacturer/", reqAuth, manufacturerRoutes);
 app.use("/billing/", reqAuth, billingRoutes);
 app.use("/dashboard/", reqAuth, dashboardRoutes);
+app.use("/book", bookRoutes);
+app.use("/api/book", bookRoutes);
 app.use((err, req, res, next) => {
   console.error(err.stack);
   res.status(500).json({ error: "Something went wrong!" });
