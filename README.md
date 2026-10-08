@@ -45,6 +45,31 @@ Backend for Pharma Inventory app with comprehensive API endpoints for medicine m
 
 The server will be available at `http://localhost:8080/`
 
+## Order Book API
+
+Use the backend port (`8080`) in Postman. The server supports both the documented
+`/api` URLs and the original URLs without the prefix.
+
+1. Log in with `POST http://localhost:8080/api/user/login` and a JSON body:
+   ```json
+   { "email": "your-email@example.com", "password": "your-password" }
+   ```
+2. Copy the `token` from the response and send it on book requests as
+   `Authorization: Bearer <token>`. Browser clients can continue using the
+   HTTP-only session cookie set during login.
+3. Use `GET http://localhost:8080/api/book/entries` to retrieve the signed-in
+   user's order book.
+
+Book endpoints (`/api/book`):
+
+- `GET /entries` - list active order book entries
+- `GET /history` - list previously placed orders
+- `POST /upsert` - add an entry (JSON: `name`, `quantity`; optional medicine details)
+- `PUT /:id` - update an active entry
+- `DELETE /:id` - remove an active entry
+- `DELETE /clear` - clear active entries
+- `POST /place-order` - move selected entries to order history (JSON: `ids`)
+
 ## API Usage Examples
 
 ### Add medicine to inventory:
