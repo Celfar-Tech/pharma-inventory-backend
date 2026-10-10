@@ -12,6 +12,8 @@ router.post("/forgot-password/reset", userController.resetPassword);
 
 // Route for User Login
 router.post("/login", userController.logIn);
+// Google Identity Services sign-in / sign-up (accepts a Google ID token)
+router.post("/google", userController.googleAuth);
 router.post("/logout", reqAuth, userController.logOut);
 
 // Fetch the authenticated user profile (used by the frontend session bootstrap)
