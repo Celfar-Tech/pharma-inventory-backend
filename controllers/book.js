@@ -1,4 +1,5 @@
 const Book = require("../models/book");
+const { sendSupplierOrderEmail } = require("../utils/mailer");
 
 const sendError = (res, err, message) => {
   console.error(message, err);
@@ -16,10 +17,32 @@ exports.getEntries = async (req, res) => {
 
 exports.getHistory = async (req, res) => {
   try {
-    const history = await Book.listHistory(req.user?.email);
+    const history = await Book.listLedgers(req.user?.email);
     return res.status(200).json({ success: true, data: history });
   } catch (err) {
     return sendError(res, err, "Book history fetch error:");
+  }
+};
+
+/** Expands one placed order: the ledger summary plus its ordered medicines. */
+exports.getLedgerItems = async (req, res) => {
+  try {
+    const ledgerId = typeof req.params.ledgerId === "string" ? req.params.ledgerId.trim() : "";
+    if (!ledgerId) {
+      return res.status(400).json({ success: false, error: "Missing required parameter: ledgerId" });
+    }
+
+    const result = await Book.listLedgerItems(req.user?.email, ledgerId);
+    if (!result.ledger) {
+      return res.status(404).json({
+        success: false,
+        message: `No order found with ID: ${ledgerId}`,
+      });
+    }
+
+    return res.status(200).json({ success: true, data: result });
+  } catch (err) {
+    return sendError(res, err, "Book ledger fetch error:");
   }
 };
 
@@ -99,11 +122,28 @@ exports.placeOrder = async (req, res) => {
       return res.status(400).json({ success: false, error: "No items selected" });
     }
 
-    const result = await Book.placeOrder(req.user?.email, ids);
+    const supplierName = req.body?.supplierName;
+    const supplierEmail = req.body?.supplierEmail;
+
+    const result = await Book.placeOrder(req.user?.email, ids, supplierName, supplierEmail);
+
+    // Notify the supplier only once the order has actually placed lines. The
+    // email is a side effect of a committed order, so a delivery failure is
+    // logged and surfaced via `emailSent` but never fails the request itself.
+    let emailSent = false;
+    if (result.placed.length && supplierEmail) {
+      try {
+        const email = await sendSupplierOrderEmail(supplierName, supplierEmail, req.user?.email, result.placed);
+        emailSent = Boolean(email?.sent);
+      } catch (mailErr) {
+        console.error("Supplier order email error:", mailErr);
+      }
+    }
+
     return res.status(200).json({
       success: true,
       message: `${result.placed.length} item(s) moved to order history`,
-      data: result,
+      data: { ...result, emailSent },
     });
   } catch (err) {
     return sendError(res, err, "Book place-order error:");

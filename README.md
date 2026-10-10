@@ -63,12 +63,21 @@ Use the backend port (`8080`) in Postman. The server supports both the documente
 Book endpoints (`/api/book`):
 
 - `GET /entries` - list active order book entries
-- `GET /history` - list previously placed orders
-- `POST /upsert` - add an entry (JSON: `name`, `quantity`; optional medicine details)
+- `GET /history` - list previously placed orders, one summary row per
+  `book_ledger` (ledger id, date, supplier, item count, approximate cost). The
+  ordered medicines are not included here.
+- `GET /history/:ledgerId` - expand one placed order: returns its ledger summary
+  plus every `book_items` line linked to that `ledger_id`. Scoped to the signed-in
+  user; an unknown ledger id returns `404`.
+- `POST /upsert` - add an entry (JSON: `name`, `quantity`; optional medicine details).
+  Adding, editing, removing or clearing entries only touches `book_items`; no row is
+  inserted into or updated in `book_ledger`.
 - `PUT /:id` - update an active entry
 - `DELETE /:id` - remove an active entry
 - `DELETE /clear` - clear active entries
-- `POST /place-order` - move selected entries to order history (JSON: `ids`)
+- `POST /place-order` - move selected entries to order history (JSON: `ids`). Each
+  call creates one new `book_ledger` row and stamps the selected entries with that
+  `ledger_id`; entries keep `ledger_id = NULL` until an order is placed.
 
 ## API Usage Examples
 

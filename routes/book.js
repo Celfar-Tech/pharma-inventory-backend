@@ -7,6 +7,7 @@ router.use(reqAuth);
 
 router.get("/entries", book.getEntries);
 router.get("/history", book.getHistory);
+router.get("/history/:ledgerId", book.getLedgerItems);
 router.post("/upsert", book.upsertEntry);
 router.put("/:id", book.updateEntry);
 router.delete("/clear", book.clearEntries);
