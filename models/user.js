@@ -48,6 +48,19 @@ class User {
     }
   }
 
+  // Used when provisioning a Google account, whose username is derived from the
+  // email address and therefore must be checked for collisions first.
+  static async findByUsername(username) {
+    const query = `SELECT 1 FROM pharma.users WHERE username = $1 LIMIT 1;`;
+
+    try {
+      const result = await db.query(query, [username]);
+      return result.rows[0] || null;
+    } catch (err) {
+      throw err;
+    }
+  }
+
   // Used by your logIn controller
   static async findOne(email) {
     // Aliasing user_id -> id and password_hash -> password keeps it compatible with your controller
