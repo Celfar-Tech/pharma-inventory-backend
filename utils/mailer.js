@@ -54,7 +54,7 @@ const sendOtpEmail = async (toEmail, otp) => {
  * @param {Array}  items         Placed book lines (name/quantity/price/...).
  * @returns {Promise<{sent: boolean, reason?: string, itemCount?: number, approxCost?: number}>}
  */
-const sendSupplierOrderEmail = async (supplierName, supplierEmail, customerEmail, items = []) => {
+const sendSupplierOrderEmail = async (supplierName, supplierEmail, customerEmail,customerName, items = [], ledgerId) => {
   const to = typeof supplierEmail === "string" ? supplierEmail.trim() : "";
     const cc = typeof customerEmail === "string" ? customerEmail.trim() : "";
   if (!to) {
@@ -137,7 +137,7 @@ if (!cc) {
     from: process.env.EMAIL_FROM || process.env.EMAIL_USER,
     to,
     cc,
-    subject: `Order request - ${itemCount} item${itemCount === 1 ? "" : "s"}`,
+    subject: `${ledgerId} - Order request from ${escapeHtml(customerName)}`,
     html,
   });
 
