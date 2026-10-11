@@ -133,7 +133,14 @@ exports.placeOrder = async (req, res) => {
     let emailSent = false;
     if (result.placed.length && supplierEmail) {
       try {
-        const email = await sendSupplierOrderEmail(supplierName, supplierEmail, req.user?.email, result.placed);
+        const email = await sendSupplierOrderEmail(
+          supplierName,
+          supplierEmail,
+          req.user?.email,
+          req.user?.username,
+          result.placed,
+          result.ledgerId
+        );
         emailSent = Boolean(email?.sent);
       } catch (mailErr) {
         console.error("Supplier order email error:", mailErr);
