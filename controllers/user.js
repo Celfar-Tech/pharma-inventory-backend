@@ -29,6 +29,47 @@ const SELF_SERVICE_ROLES = ['pharmacist', 'doctor'];
 
 const normalizeRole = (role) => (SELF_SERVICE_ROLES.includes(role) ? role : 'pharmacist');
 
+// Genders accepted by the profile endpoints. Stored lowercase for consistency.
+const ALLOWED_GENDERS = ['male', 'female', 'other', 'prefer not to say'];
+
+// The exact strength rule registration applies, reused so the two paths cannot
+// drift apart. `validate.isStrongPassword` defaults: >=8 chars incl. upper,
+// lower, number and symbol.
+const STRONG_PASSWORD_MESSAGE =
+  'Password must be at least 8 characters long and include uppercase, lowercase, numbers, and symbols.';
+
+/**
+ * Resolves which account a profile request targets.
+ *
+ * The signed-in user's email is authoritative. When a caller also passes an
+ * `email` (body for writes, query for reads) it must match the session; otherwise
+ * we refuse, so nobody can read or edit another account. Omitting it simply
+ * defaults to the session email.
+ */
+const resolveProfileEmail = (req) => {
+  const requested =
+    (typeof req.body?.email === 'string' && req.body.email) ||
+    (typeof req.query?.email === 'string' && req.query.email) ||
+    '';
+
+  const sessionEmail = String(req.user?.email || '').trim().toLowerCase();
+  const email = (requested || sessionEmail).trim().toLowerCase();
+
+  if (!email) {
+    return { error: 'Email address is required.' };
+  }
+
+  if (!validate.isEmail(email)) {
+    return { error: 'Invalid Email format' };
+  }
+
+  if (sessionEmail && email !== sessionEmail) {
+    return { error: 'You can only access your own profile.', forbidden: true };
+  }
+
+  return { email };
+};
+
 /**
  * Writes the session cookies every authenticated request depends on.
  * Extracted so password login and Google login cannot drift apart.
@@ -596,5 +637,182 @@ exports.resetPassword = async (req, res) => {
       success: false,
       error: 'Failed to reset password. Please try again.'
     });
+  }
+};
+
+// File: backend/controllers/user.js [PROFILE SECTION]
+
+/**
+ * GET /user/get-user-details?email=
+ *
+ * Fetches a user's editable profile (first_name, last_name, phone_number,
+ * date_of_birth, gender, license_number) keyed by email. The password hash is
+ * intentionally never returned — a login credential must not reach the client.
+ */
+exports.getUserDetails = async (req, res) => {
+  const { email, error, forbidden } = resolveProfileEmail(req);
+
+  if (error) {
+    return res.status(forbidden ? 403 : 400).json({ success: false, error });
+  }
+
+  try {
+    const profile = await User.findProfileByEmail(email);
+
+    if (!profile) {
+      return res.status(404).json({ success: false, error: 'No account with that email found.' });
+    }
+
+    return res.status(200).json({ success: true, data: profile });
+  } catch (err) {
+    console.error('Fetch user details error:', err);
+    return res.status(500).json({ success: false, error: 'Failed to fetch user details.' });
+  }
+};
+
+/**
+ * PUT /user/update-user-details
+ *
+ * Partially updates a user's profile fields — and optionally the password —
+ * keyed by email. Only keys present in the body are written, so callers can
+ * update a single field. Send `null`/`""` to clear phone_number, date_of_birth,
+ * gender or license_number.
+ *
+ * A supplied password is strength-checked exactly like registration and is
+ * hashed here; a raw `password_hash` from the client is never accepted.
+ */
+exports.updateUserDetails = async (req, res) => {
+  const { email, error, forbidden } = resolveProfileEmail(req);
+
+  if (error) {
+    return res.status(forbidden ? 403 : 400).json({ success: false, error });
+  }
+
+  const body = req.body || {};
+  const has = (key) => Object.prototype.hasOwnProperty.call(body, key);
+  const updates = {};
+
+  // --- first_name / last_name ---------------------------------------------
+  for (const field of ['first_name', 'last_name']) {
+    if (!has(field)) continue;
+    const value = typeof body[field] === 'string' ? body[field].trim() : '';
+    if (!value) {
+      return res.status(400).json({ success: false, error: `${field} cannot be empty.` });
+    }
+    updates[field] = value;
+  }
+
+  // --- phone_number --------------------------------------------------------
+  if (has('phone_number')) {
+    const raw = body.phone_number;
+    if (raw === null || (typeof raw === 'string' && raw.trim() === '')) {
+      updates.phone_number = null;
+    } else {
+      const phone = String(raw).replace(/[\s()-]/g, '');
+      if (!/^\+?\d{7,15}$/.test(phone)) {
+        return res.status(400).json({ success: false, error: 'Invalid phone number format.' });
+      }
+      updates.phone_number = phone;
+    }
+  }
+
+  // --- date_of_birth -------------------------------------------------------
+  if (has('date_of_birth')) {
+    const raw = body.date_of_birth;
+    if (raw === null || (typeof raw === 'string' && raw.trim() === '')) {
+      updates.date_of_birth = null;
+    } else {
+      const dob = new Date(raw);
+      if (Number.isNaN(dob.getTime())) {
+        return res.status(400).json({ success: false, error: 'Invalid date_of_birth format.' });
+      }
+      if (dob.getTime() > Date.now()) {
+        return res.status(400).json({ success: false, error: 'date_of_birth cannot be in the future.' });
+      }
+      updates.date_of_birth = dob.toISOString().slice(0, 10);
+    }
+  }
+
+  // --- gender --------------------------------------------------------------
+  if (has('gender')) {
+    const raw = body.gender;
+    if (raw === null || (typeof raw === 'string' && raw.trim() === '')) {
+      updates.gender = null;
+    } else {
+      const gender = String(raw).trim().toLowerCase();
+      if (!ALLOWED_GENDERS.includes(gender)) {
+        return res.status(400).json({
+          success: false,
+          error: `gender must be one of: ${ALLOWED_GENDERS.join(', ')}.`,
+        });
+      }
+      updates.gender = gender;
+    }
+  }
+
+  // --- license_number ------------------------------------------------------
+  if (has('license_number')) {
+    const raw = body.license_number;
+    if (raw === null || (typeof raw === 'string' && raw.trim() === '')) {
+      updates.license_number = null;
+    } else {
+      const license = String(raw).trim();
+      if (license.length > 100) {
+        return res.status(400).json({ success: false, error: 'license_number is too long.' });
+      }
+      updates.license_number = license;
+    }
+  }
+
+  // --- password (validated exactly like registration) ----------------------
+  const password = body.password ?? body.new_password;
+  let passwordHash = null;
+
+  if (password !== undefined && password !== null && password !== '') {
+    if (typeof password !== 'string' || !validate.isStrongPassword(password)) {
+      return res.status(400).json({ success: false, error: STRONG_PASSWORD_MESSAGE });
+    }
+
+    try {
+      const existing = await User.findOne(email);
+      if (!existing) {
+        return res.status(404).json({ success: false, error: 'No account with that email found.' });
+      }
+      const sameAsCurrent = await bcrypt.compare(password, existing.password);
+      if (sameAsCurrent) {
+        return res.status(400).json({ success: false, error: 'New password cannot match your current password.' });
+      }
+    } catch (err) {
+      console.error('Update user details (password check) error:', err);
+      return res.status(500).json({ success: false, error: 'Failed to update user details.' });
+    }
+
+    const salt = await bcrypt.genSalt(10);
+    passwordHash = await bcrypt.hash(password, salt);
+  }
+
+  if (Object.keys(updates).length === 0 && !passwordHash) {
+    return res.status(400).json({
+      success: false,
+      error:
+        'No updatable fields provided. Allowed: first_name, last_name, phone_number, date_of_birth, gender, license_number, password.',
+    });
+  }
+
+  try {
+    const updated = await User.updateProfileByEmail(email, updates, passwordHash);
+
+    if (!updated) {
+      return res.status(404).json({ success: false, error: 'No account with that email found.' });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'User details updated successfully.',
+      data: updated,
+    });
+  } catch (err) {
+    console.error('Update user details error:', err);
+    return res.status(500).json({ success: false, error: 'Failed to update user details.' });
   }
 };
