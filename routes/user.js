@@ -19,4 +19,9 @@ router.post("/logout", reqAuth, userController.logOut);
 // Fetch the authenticated user profile (used by the frontend session bootstrap)
 router.get("/profile", reqAuth, userController.getProfile);
 
+// Profile section: fetch / update a user's editable details, keyed by email.
+// The email must match the signed-in session (see resolveProfileEmail).
+router.get("/get-user-details", reqAuth, userController.getUserDetails);
+router.put("/update-user-details", reqAuth, userController.updateUserDetails);
+
 module.exports = router;
